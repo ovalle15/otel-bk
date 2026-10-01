@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkite-agent
+  namespace: buildkite
+spec:
+  replicas: 1
+  # Learning lab: release the old pod's memory before starting its replacement.
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+  selector:
+    matchLabels:
+      app: buildkite-agent
+  template:
+    metadata:
+      labels:
+        app: buildkite-agent
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: agent
+          image: buildkite/agent:3-ubuntu@sha256:2d9264bdfddd9135f785f09281a0e891fcb620104c01fccc64d491da47c0d7f7
+          env:
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: buildkite-agent-token
+                  key: BUILDKITE_AGENT_TOKEN
+            - name: BUILDKITE_AGENT_TAGS
+              value: queue=otel-lab
+            - name: BUILDKITE_TRACING_BACKEND
+              value: opentelemetry
+            - name: BUILDKITE_TRACING_PROPAGATE_TRACEPARENT
+              value: "true"
+            - name: BUILDKITE_JOB_LOGS_OTLP
+              value: "true"
+            - name: BUILDKITE_TRACING_SERVICE_NAME
+              value: buildkite-agent
+            - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
+              value: "0.0.0.0:3901"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-gateway.otel-lab.svc.cluster.local:4317
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: grpc
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: "true"
+            - name: K8S_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+          ports:
+            - name: metrics
+              containerPort: 3901
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkite-agent-metrics
+  namespace: buildkite
+spec:
+  selector:
+    app: buildkite-agent
+  ports:
+    - name: metrics
+      port: 3901
+      targetPort: metrics

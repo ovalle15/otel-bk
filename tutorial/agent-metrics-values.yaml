@@ -1,0 +1,14 @@
+# Overlay for the single-replica gateway in this lab.
+config:
+  receivers:
+    prometheus/buildkite:
+      config:
+        scrape_configs:
+          - job_name: buildkite-agent
+            scrape_interval: 10s
+            static_configs:
+              - targets: ["buildkite-agent-metrics.buildkite.svc.cluster.local:3901"]
+  service:
+    pipelines:
+      metrics:
+        receivers: [otlp, prometheus/buildkite]
