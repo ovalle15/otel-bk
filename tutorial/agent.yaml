@@ -5,6 +5,10 @@ metadata:
   namespace: buildkite
 spec:
   replicas: 1
+  # Learning lab: release the old pod's memory before starting its replacement.
+  strategy:
+    type: Recreate
+    rollingUpdate: null
   selector:
     matchLabels:
       app: buildkite-agent
@@ -17,20 +21,22 @@ spec:
       terminationGracePeriodSeconds: 60
       containers:
         - name: agent
-          image: buildkite/agent:3.138.0-ubuntu
+          image: buildkite/agent:3-ubuntu@sha256:2d9264bdfddd9135f785f09281a0e891fcb620104c01fccc64d491da47c0d7f7
           env:
             - name: BUILDKITE_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: buildkite-agent-token
-                  key: token
+                  key: BUILDKITE_AGENT_TOKEN
             - name: BUILDKITE_AGENT_TAGS
               value: queue=otel-lab
-            - name: BUILDKITE_OPENTELEMETRY_TRACING
+            - name: BUILDKITE_TRACING_BACKEND
+              value: opentelemetry
+            - name: BUILDKITE_TRACING_PROPAGATE_TRACEPARENT
               value: "true"
             - name: BUILDKITE_JOB_LOGS_OTLP
               value: "true"
-            - name: BUILDKITE_TELEMETRY_SERVICE_NAME
+            - name: BUILDKITE_TRACING_SERVICE_NAME
               value: buildkite-agent
             - name: BUILDKITE_AGENT_HEALTH_CHECK_ADDR
               value: "0.0.0.0:3901"

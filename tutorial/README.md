@@ -4,7 +4,7 @@ Learn **where telemetry comes from, how it travels, and what it tells you**. Run
 
 This lab uses self-hosted Buildkite agents on Linux Kubernetes nodes. First, run a long-lived agent in a Deployment to understand the pieces. Later, apply the design to Agent Stack for Kubernetes, where a controller creates pods for individual jobs.
 
-Examples pin Collector chart `0.173.1` / image `0.160.0`, agent `3.138.0`, and Python SDK `1.36.0`. These are learning pins, not a claim that they are the latest releases. Check installed flags when adapting to other versions.
+Examples pin Collector chart `0.173.1` / image `0.160.0` and Python SDK `1.36.0`. The agent image uses `buildkite/agent:3-ubuntu` pinned by digest to verified agent `3.137.2`. Check installed flags and the feature minimums below when changing versions. See [Buildkite's v3 Docker image documentation](https://buildkite.com/docs/agent/v3/docker).
 
 ## 1. Map the signals and sources
 
@@ -60,6 +60,64 @@ helm repo update
 
 If a namespace exists, inspect it and skip creation. Node collection needs host log mounts, which some admission policies restrict.
 
+### Rancher Desktop memory and scheduling
+
+The full demo's regular containers request approximately **9,072 MiB (8.86 GiB)**, before Kubernetes system workloads, init-container requirements, and tutorial resources. This is based on the supplied manifest with one replica per workload and one node for its DaemonSet. Kubernetes normally uses a container's memory limit as its request when no request is provided. Scheduling compares requests with allocatable node memory, not just current usage. See [Kubernetes resource management](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/).
+
+If pods are Pending with `Insufficient memory`, inspect:
+
+```bash
+kubectl get nodes -o custom-columns=NAME:.metadata.name,MEMORY:.status.allocatable.memory
+kubectl describe node
+kubectl get events --all-namespaces --field-selector=reason=FailedScheduling
+```
+
+In `kubectl describe node`, compare **Allocatable** memory with **Allocated resources → Requests**. A container that has not started can still reserve memory after its pod is assigned to a node.
+
+For Rancher Desktop on macOS, open **Preferences → Virtual Machine → Hardware → Memory**. If your Mac has enough spare RAM, 12 GiB is a starting allocation for this full demo and lab; leave room for macOS and other applications and stay outside the app's red allocation range. Apply the change and allow any requested restart. See [Rancher Desktop hardware settings](https://docs.rancherdesktop.io/ui/preferences/virtual-machine/hardware/).
+
+For a smaller learning setup, defer the full demo until step 9. If it is already installed, pause only demo workloads you choose to stop. For example, its load generator requests 1,500 MiB:
+
+```bash
+# Use the namespace where you installed the demo; default is shown here.
+kubectl -n default scale deployment/load-generator --replicas=0
+```
+
+Other Pending pods may consume the freed capacity, so check scheduling again. Restore the load generator with `--replicas=1` when you have enough capacity.
+
+### Choose which agent setup to run
+
+| Deployment | What its pod does |
+| --- | --- |
+| `buildkite-agent` | Runs the standalone agent used in steps 4–10 |
+| `agent-stack-k8s` | Runs the controller that creates per-job agent pods in step 11 |
+
+If you previously installed Agent Stack, both can appear in namespace `buildkite`. They are different components, not two revisions of the same agent. Inspect their owners and desired counts:
+
+```bash
+kubectl -n buildkite get pods \
+  -o custom-columns=NAME:.metadata.name,OWNER:.metadata.ownerReferences[0].name
+kubectl -n buildkite get replicasets \
+  -o custom-columns=NAME:.metadata.name,DEPLOYMENT:.metadata.ownerReferences[0].name,DESIRED:.spec.replicas
+kubectl -n buildkite get deployments
+```
+
+A Deployment owns ReplicaSets, which own pods. Deleting a pod alone usually causes its controller to create a replacement. To pause the existing Agent Stack controller while doing the standalone exercises, use its actual Deployment name:
+
+```bash
+# Run only if this is your learning controller and no new stack jobs are needed.
+kubectl -n buildkite scale deployment/agent-stack-k8s --replicas=0
+kubectl -n buildkite get pods
+```
+
+This keeps the controller's configuration but stops it from processing new jobs. It does not remove existing job pods. Restore it before step 11:
+
+```bash
+kubectl -n buildkite scale deployment/agent-stack-k8s --replicas=1
+```
+
+A Helm upgrade or another configuration manager may restore its configured replica count. These commands pause the Deployment; they do not uninstall Agent Stack.
+
 Your existing `opentelemetry-demo.yaml` contains a DaemonSet Collector, Jaeger, Prometheus, OpenSearch, and sample services. Its Collector already has host/kubelet/cluster receivers, with leader election for cluster collection. Its log pipeline accepts OTLP but has no filelog receiver. Its Service uses `internalTrafficPolicy: Local`, requiring a ready local endpoint on the sending node. This tutorial uses a separate gateway with ordinary cluster routing.
 
 **Checkpoint:** Why use a Service address instead of a pod IP as the telemetry destination?
@@ -96,20 +154,81 @@ Readiness proves the Collector started. It does not prove that any telemetry arr
 
 Create a learning Buildkite pipeline pointing to a Git repository containing this tutorial, and a self-hosted queue named `otel-lab`. Use an agent token for the appropriate Buildkite cluster. Private repositories also require Git credentials; start with a repository the agent can clone.
 
-Create the token Secret without committing a credential:
+Create the queue in Buildkite before starting the agent: open **Agents**, select the cluster associated with your token, open **Queues**, then **New Queue**. Enter queue key `otel-lab`, choose **Self hosted**, and create it. The queue tag in Kubernetes selects an existing Buildkite queue; it does not create one. See [managing Buildkite queues](https://buildkite.com/docs/agent/queues/managing).
+
+Use the existing `BUILDKITE_AGENT_TOKEN` variable from your Bash profile to populate the token Secret. These commands use Bash; run `bash` first if your terminal uses another shell. If the variable is not loaded in that shell, run:
 
 ```bash
-read -r -s -p 'Buildkite agent token: ' BK_LAB_TOKEN
-echo
-printf '%s' "$BK_LAB_TOKEN" | kubectl -n buildkite create secret generic \
-  buildkite-agent-token --from-file=token=/dev/stdin
-unset BK_LAB_TOKEN
+source ~/.bash_profile
+```
+
+If `buildkite-agent-token` does not exist yet, create the empty Secret first. Skip this command if it already exists:
+
+```bash
+kubectl -n buildkite create secret generic buildkite-agent-token
+```
+
+Populate or update its token field with the working command below:
+
+```bash
+: "${BUILDKITE_AGENT_TOKEN:?Load BUILDKITE_AGENT_TOKEN first}"
+
+printf '%s' "$BUILDKITE_AGENT_TOKEN" | \
+  python3 -c 'import json,sys; print(json.dumps({"stringData":{"BUILDKITE_AGENT_TOKEN":sys.stdin.read().strip()}}))' | \
+  kubectl -n buildkite patch secret buildkite-agent-token \
+    --type=merge --patch-file=/dev/stdin
+```
+
+After the Secret exists, deploy the agent:
+
+```bash
 kubectl apply -f tutorial/agent.yaml
 kubectl -n buildkite rollout status deployment/buildkite-agent
 kubectl -n buildkite logs deployment/buildkite-agent --tail=60
 ```
 
 Read [agent.yaml](agent.yaml). Tracing, job-log export, endpoint, and protocol are configured **when the agent starts**. Setting them inside a job cannot configure its parent agent. Job-log export is independent of tracing and requires agent `3.135.0` or later; child-process trace propagation requires `3.100.0` or later. See [agent tracing and log export](https://buildkite.com/docs/agent/self-hosted/monitoring-and-observability/tracing).
+
+In `secretKeyRef`, `name` identifies the Secret object and `key` identifies a field inside it. Both must match the existing Secret. This lab uses Secret `buildkite-agent-token` with field `BUILDKITE_AGENT_TOKEN`, loaded into the environment variable of the same name. To inspect field names without printing their values:
+
+```bash
+kubectl -n buildkite get secret buildkite-agent-token \
+  -o go-template='{{range $key, $value := .data}}{{printf "%s\n" $key}}{{end}}'
+```
+
+For the verified v3.137.2 image, tracing uses `BUILDKITE_TRACING_BACKEND=opentelemetry`, `BUILDKITE_TRACING_PROPAGATE_TRACEPARENT=true`, and `BUILDKITE_TRACING_SERVICE_NAME`. These were checked against the image's `buildkite-agent start --help`. Newer documentation uses renamed settings; check your actual binary instead of mixing versions.
+
+This single-agent lab uses `strategy.type: Recreate`: updates remove the old pod before starting its replacement, avoiding the extra memory reservation of a rolling update. The explicit `rollingUpdate: null` clears an existing rolling-update configuration when applying this manifest. Agent updates temporarily remove capacity, so do them between learning jobs. See [Kubernetes Deployment strategies](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy).
+
+### Change the agent's Buildkite cluster
+
+The registration token selects the Buildkite cluster; the queue tag selects a queue within it. To move the standalone agent, obtain an agent token from **Agents → intended cluster → Agent Tokens**. Create one there if needed. Confirm that the same cluster has a self-hosted queue with key `otel-lab` and that your learning pipeline is assigned to that cluster. See [Buildkite agent tokens](https://buildkite.com/docs/agent/self-hosted/tokens).
+
+Make sure `BUILDKITE_AGENT_TOKEN` in `~/.bash_profile` contains the agent token for the intended cluster. Run this block in Bash to load that variable and update the existing Kubernetes Secret:
+
+```bash
+source ~/.bash_profile
+: "${BUILDKITE_AGENT_TOKEN:?Load BUILDKITE_AGENT_TOKEN first}"
+
+printf '%s' "$BUILDKITE_AGENT_TOKEN" | \
+  python3 -c 'import json,sys; print(json.dumps({"stringData":{"BUILDKITE_AGENT_TOKEN":sys.stdin.read().strip()}}))' | \
+  kubectl -n buildkite patch secret buildkite-agent-token \
+    --type=merge --patch-file=/dev/stdin
+```
+
+This uses the existing profile variable without a `read` prompt or a temporary token file. The guard checks that the variable is set and nonempty; Python converts its value to a JSON patch. Keep the pipe to `kubectl` intact so the token is not printed. Editing your Bash profile alone does not update the Kubernetes Secret.
+
+After the patch succeeds, restart the agent so its environment loads the new Secret value:
+
+```bash
+kubectl -n buildkite rollout restart deployment/buildkite-agent
+kubectl -n buildkite rollout status deployment/buildkite-agent
+kubectl -n buildkite logs deployment/buildkite-agent --tail=60
+```
+
+Verify the agent appears under the intended cluster and queue in Buildkite. Changing a Secret does not refresh an existing process's environment. The fleet metrics exercise shares this Secret; restart that Deployment too if installed. The Agent Stack controller in this setup uses the separate `agent-stack-k8s-secrets` Secret and is not moved by this change.
+
+**Checkpoint:** Explain each hop: Bash-profile variable → Kubernetes Secret field → agent environment after restart. Which hop changes when you edit only your local profile?
 
 Start with this inline pipeline step:
 
@@ -326,6 +445,8 @@ Use the learning queue only. Node metrics cannot describe Buildkite's queue back
 
 The lab Deployment runs jobs in a persistent agent pod. Agent Stack adds a controller that creates separate job pods. Observe controller, agent container, and command container separately:
 
+If you paused an existing learning controller in step 2, restore it with `kubectl -n buildkite scale deployment/agent-stack-k8s --replicas=1`. When moving to the stack exercises, you can pause the standalone agent with `kubectl -n buildkite scale deployment/buildkite-agent --replicas=0`. Keep the controller's configured queue and the stack pipeline's queue aligned. Restore the standalone agent to one replica when returning to the earlier exercises.
+
 1. Inspect the installed chart version and generated pod specification. Apply tracing, job-log, and endpoint settings to the **agent container** through supported pod/agent configuration. Apply SDK endpoint settings and the Python image to the **command container** too.
 2. Keep node and cluster Collectors. Adjust log paths for the actual namespace. Add downward-API pod UID to command containers for association.
 3. Enable and scrape the controller's Prometheus endpoint separately from agent metrics. Discover each pod endpoint for fleet collection.
@@ -338,9 +459,15 @@ The stack exposes a subset of agent settings; check [agent configuration](https:
 | Symptom | Next check |
 | --- | --- |
 | Agent never connects | Token/cluster/queue, Buildkite connectivity, startup logs |
+| CrashLoopBackOff | Previous-container logs and last exit reason; a registration error can cause the agent to exit |
+| Agent exits with “Could not find a queue” | Create the tagged self-hosted queue in the token's Buildkite cluster, or consistently use an existing queue in agent/pipeline/fleet settings |
 | Job queued | Matching queue tags and available agents |
 | Pod Pending | Events, resource requests, node selectors, controller logs |
 | No traces | Startup settings, DNS, Service endpoints, network policy, protocol/port |
+| ImagePullBackOff | Pod events: missing tag, registry connectivity, credentials, or architecture |
+| CreateContainerConfigError | Waiting message and events; check that referenced Secret exists and contains the requested key |
+| Old pod fails its image pull while the corrected pod is Pending | Inspect both pod images/events; a rolling update can retain the old pod's memory reservation |
+| Both `agent-stack-k8s` and `buildkite-agent` pods appear | Inspect ownership: these are different Deployments; scale the learning setup you want to pause to zero |
 | No agent metrics | Source `/metrics` output and metrics receiver list |
 | No job logs | Agent version, startup log-export setting, logs pipeline |
 | No console logs | Mounts, include path, fresh stdout, node Collector placement |
@@ -351,6 +478,22 @@ The stack exposes a subset of agent settings; check [agent configuration](https:
 | Duplicate telemetry | Repeated scraping/cluster collection or overlapping log sources |
 
 For kubelet failures, inspect the rendered endpoint, certificate names, and CA; configure trust and a matching address. Avoid treating disabled certificate verification as the standard fix.
+
+For agent startup failures, first find its pod and read the waiting message and events:
+
+```bash
+kubectl -n buildkite get pods -l app=buildkite-agent
+kubectl -n buildkite get events --sort-by=.metadata.creationTimestamp
+```
+
+If it starts and then exits, read the previous container's output. Substitute the current pod name:
+
+```bash
+kubectl -n buildkite logs <agent-pod-name> -c agent --previous --tail=60
+kubectl -n buildkite logs <agent-pod-name> -c agent --tail=60
+```
+
+`--previous` requires an earlier terminated container. An image-pull or Secret configuration error happens before the agent runs, so pod events are the evidence there. A message such as `Could not find a queue named otel-lab in the cluster Default cluster` means the agent reached Buildkite but the selected queue is missing from the token's cluster. Create that self-hosted queue in Buildkite or use an existing queue consistently in the agent, pipeline, and fleet metrics configuration.
 
 ```bash
 kubectl -n otel-lab get pods,services,endpointslices
@@ -372,7 +515,7 @@ A successful export proves receipt, not durable storage. Verify backend queries.
 
 Correlate job ID, pod UID/name, node, and timestamps. Metrics correlate by resource and time; they do not automatically carry trace IDs. For production, add durable storage, TLS/authentication, bounded attributes, secret redaction, exporter queues/retries, Collector monitoring, and an intentional sampling policy.
 
-Remove only the lab resources when finished:
+Remove only the lab resources when finished. Skip the token Secret deletion if it existed before the lab or another workload uses it. Skip removal of optional releases or deployments you did not install:
 
 ```bash
 kubectl -n buildkite delete deployment/buildkite-agent service/buildkite-agent-metrics
@@ -382,6 +525,8 @@ helm uninstall otel-node otel-cluster otel-gateway -n otel-lab
 ```
 
 Only uninstall releases you installed. Keep shared namespaces and pre-existing demo resources.
+
+If you paused a pre-existing Agent Stack controller or demo load generator for the exercises, restore its original replica count when finishing.
 
 ## Verification
 

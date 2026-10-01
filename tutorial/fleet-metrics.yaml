@@ -32,7 +32,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: buildkite-agent-token
-                  key: token
+                  key: BUILDKITE_AGENT_TOKEN
             - name: OTEL_SERVICE_NAME
               value: buildkite-fleet-metrics
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
