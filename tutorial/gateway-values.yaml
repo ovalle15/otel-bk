@@ -1,0 +1,51 @@
+mode: deployment
+replicaCount: 1
+fullnameOverride: otel-gateway
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.160.0"
+command:
+  name: otelcol-contrib
+presets:
+  kubernetesAttributes:
+    enabled: true
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+config:
+  receivers:
+    jaeger: null
+    zipkin: null
+    prometheus: null
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+  exporters:
+    debug:
+      verbosity: detailed
+  processors:
+    resource/lab:
+      attributes:
+        - key: k8s.cluster.name
+          value: otel-learning
+          action: upsert
+  service:
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, resource/lab, batch]
+        exporters: [debug]
+      metrics:
+        receivers: [otlp]
+        processors: [memory_limiter, resource/lab, batch]
+        exporters: [debug]
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, resource/lab, batch]
+        exporters: [debug]

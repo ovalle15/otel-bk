@@ -1,0 +1,15 @@
+# Optional: requires the existing demo's services in namespace otel-demo.
+config:
+  exporters:
+    otlp_grpc/jaeger:
+      endpoint: jaeger.otel-demo.svc.cluster.local:4317
+      tls:
+        insecure: true
+    otlp_http/prometheus:
+      endpoint: http://prometheus.otel-demo.svc.cluster.local:9090/api/v1/otlp
+  service:
+    pipelines:
+      traces:
+        exporters: [debug, otlp_grpc/jaeger]
+      metrics:
+        exporters: [debug, otlp_http/prometheus]

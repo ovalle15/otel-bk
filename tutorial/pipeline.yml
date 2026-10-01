@@ -1,0 +1,6 @@
+# Upload explicitly from a tutorial pipeline; this file is not auto-enabled.
+steps:
+  - label: "OTel learning exercise"
+    agents:
+      queue: otel-lab
+    command: /opt/otel-venv/bin/python tutorial/job.py

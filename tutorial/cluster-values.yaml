@@ -1,0 +1,55 @@
+mode: deployment
+replicaCount: 1
+fullnameOverride: otel-cluster
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.160.0"
+command:
+  name: otelcol-contrib
+presets:
+  clusterMetrics:
+    enabled: true
+  kubernetesEvents:
+    enabled: true
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+config:
+  receivers:
+    jaeger: null
+    zipkin: null
+    prometheus: null
+    otlp: null
+  exporters:
+    debug: null
+    otlp_grpc/gateway:
+      endpoint: otel-gateway.otel-lab.svc.cluster.local:4317
+      tls:
+        insecure: true
+  service:
+    pipelines:
+      traces: null
+      metrics:
+        receivers: []
+        processors: [memory_limiter, batch]
+        exporters: [otlp_grpc/gateway]
+      logs:
+        receivers: []
+        processors: [memory_limiter, batch]
+        exporters: [otlp_grpc/gateway]
+ports:
+  otlp:
+    enabled: false
+  otlp-http:
+    enabled: false
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false

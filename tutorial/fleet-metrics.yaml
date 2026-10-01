@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkite-fleet-metrics
+  namespace: buildkite
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: buildkite-fleet-metrics
+  template:
+    metadata:
+      labels:
+        app: buildkite-fleet-metrics
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: metrics
+          # Select a release tag/digest before using beyond the learning lab.
+          image: public.ecr.aws/buildkite/agent-metrics:latest
+          args:
+            - -backend
+            - opentelemetry
+            - -token
+            - $(BUILDKITE_AGENT_TOKEN)
+            - -interval
+            - 30s
+            - -queue
+            - otel-lab
+          env:
+            - name: BUILDKITE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: buildkite-agent-token
+                  key: token
+            - name: OTEL_SERVICE_NAME
+              value: buildkite-fleet-metrics
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-gateway.otel-lab.svc.cluster.local:4318
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
