@@ -2,11 +2,11 @@
 
 Start with the [step-by-step tutorial](tutorial/README.md). Learn the data flow, then collect job traces and logs, agent metrics, and Kubernetes telemetry. Each stage includes a checkpoint and an experiment.
 
-The files in `tutorial/` are learning examples to deploy yourself, one stage at a time. The existing `opentelemetry-demo.yaml` is a separate, larger example used for an optional backend exercise.
+The files in `tutorial/` configure the Buildkite agent, gateway, node and cluster Collectors, agent and fleet metrics, and an instrumented job. Deploy them one stage at a time. Telemetry goes to the gateway's `debug` exporter for inspection; configure your own backend when you need storage and dashboards.
 
 ## Before you start
 
-- Begin with the small tutorial setup. The full demo's regular containers request roughly **8.86 GiB** of memory before Kubernetes system workloads and the tutorial resources. See [Rancher Desktop memory and scheduling](tutorial/README.md#rancher-desktop-memory-and-scheduling).
+- Check that your Kubernetes cluster has capacity for the agents and Collectors. See [Rancher Desktop memory and scheduling](tutorial/README.md#rancher-desktop-memory-and-scheduling).
 - Create the self-hosted Buildkite queue `otel-lab` in the cluster associated with your agent token. The agent tag selects that queue; it does not create it.
 - The token Secret is `buildkite-agent-token` in namespace `buildkite`, with a field named `BUILDKITE_AGENT_TOKEN`. The manifest must match both names.
 - The working token workflow uses your existing Bash variable `BUILDKITE_AGENT_TOKEN` from `~/.bash_profile`. Load it if needed, patch the Kubernetes Secret from the variable, then restart the agent. Follow [the token update steps](tutorial/README.md#change-the-agents-buildkite-cluster). The token must belong to the intended Buildkite cluster.

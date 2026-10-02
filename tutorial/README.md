@@ -18,7 +18,7 @@ Examples pin Collector chart `0.173.1` / image `0.160.0` and Python SDK `1.36.0`
 | Attribute | Context attached to telemetry | Pod UID, pipeline, outcome |
 | OTLP | OpenTelemetry transport protocol | gRPC on 4317; HTTP on 4318 |
 | Collector | Receives, processes, and exports data | Adds pod metadata and forwards spans |
-| Backend | Stores and queries telemetry | Jaeger for traces; Prometheus for metrics |
+| Backend | Stores and queries telemetry | Your chosen observability platform |
 
 OTel provides instrumentation and collection. You still need storage and a UI for historical exploration. Begin with the Collector's `debug` exporter to inspect each record.
 
@@ -30,7 +30,6 @@ flowchart LR
   N[Node Collector DaemonSet: host, kubelet, console logs] -->|OTLP| G
   C[One cluster Collector: state and events] -->|OTLP| G
   G --> D[Debug output]
-  G -. optional .-> B[Jaeger and Prometheus]
   P[Buildkite notification service] -. public OTLP HTTP .-> G
 ```
 
@@ -62,7 +61,7 @@ If a namespace exists, inspect it and skip creation. Node collection needs host 
 
 ### Rancher Desktop memory and scheduling
 
-The full demo's regular containers request approximately **9,072 MiB (8.86 GiB)**, before Kubernetes system workloads, init-container requirements, and tutorial resources. This is based on the supplied manifest with one replica per workload and one node for its DaemonSet. Kubernetes normally uses a container's memory limit as its request when no request is provided. Scheduling compares requests with allocatable node memory, not just current usage. See [Kubernetes resource management](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/).
+Kubernetes schedules pods using resource requests and allocatable node memory. Account for your agents, Collectors, and other workloads. See [Kubernetes resource management](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/).
 
 If pods are Pending with `Insufficient memory`, inspect:
 
@@ -74,23 +73,14 @@ kubectl get events --all-namespaces --field-selector=reason=FailedScheduling
 
 In `kubectl describe node`, compare **Allocatable** memory with **Allocated resources → Requests**. A container that has not started can still reserve memory after its pod is assigned to a node.
 
-For Rancher Desktop on macOS, open **Preferences → Virtual Machine → Hardware → Memory**. If your Mac has enough spare RAM, 12 GiB is a starting allocation for this full demo and lab; leave room for macOS and other applications and stay outside the app's red allocation range. Apply the change and allow any requested restart. See [Rancher Desktop hardware settings](https://docs.rancherdesktop.io/ui/preferences/virtual-machine/hardware/).
-
-For a smaller learning setup, defer the full demo until step 9. If it is already installed, pause only demo workloads you choose to stop. For example, its load generator requests 1,500 MiB:
-
-```bash
-# Use the namespace where you installed the demo; default is shown here.
-kubectl -n default scale deployment/load-generator --replicas=0
-```
-
-Other Pending pods may consume the freed capacity, so check scheduling again. Restore the load generator with `--replicas=1` when you have enough capacity.
+For Rancher Desktop on macOS, adjust memory under **Preferences → Virtual Machine → Hardware → Memory** if your workloads need more capacity. Leave room for macOS and other applications. Apply the change and allow any requested restart. See [Rancher Desktop hardware settings](https://docs.rancherdesktop.io/ui/preferences/virtual-machine/hardware/).
 
 ### Choose which agent setup to run
 
 | Deployment | What its pod does |
 | --- | --- |
-| `buildkite-agent` | Runs the standalone agent used in steps 4–10 |
-| `agent-stack-k8s` | Runs the controller that creates per-job agent pods in step 11 |
+| `buildkite-agent` | Runs the standalone agent used in steps 4–9 |
+| `agent-stack-k8s` | Runs the controller that creates per-job agent pods in step 10 |
 
 If you previously installed Agent Stack, both can appear in namespace `buildkite`. They are different components, not two revisions of the same agent. Inspect their owners and desired counts:
 
@@ -110,15 +100,13 @@ kubectl -n buildkite scale deployment/agent-stack-k8s --replicas=0
 kubectl -n buildkite get pods
 ```
 
-This keeps the controller's configuration but stops it from processing new jobs. It does not remove existing job pods. Restore it before step 11:
+This keeps the controller's configuration but stops it from processing new jobs. It does not remove existing job pods. Restore it before step 10:
 
 ```bash
 kubectl -n buildkite scale deployment/agent-stack-k8s --replicas=1
 ```
 
 A Helm upgrade or another configuration manager may restore its configured replica count. These commands pause the Deployment; they do not uninstall Agent Stack.
-
-Your existing `opentelemetry-demo.yaml` contains a DaemonSet Collector, Jaeger, Prometheus, OpenSearch, and sample services. Its Collector already has host/kubelet/cluster receivers, with leader election for cluster collection. Its log pipeline accepts OTLP but has no filelog receiver. Its Service uses `internalTrafficPolicy: Local`, requiring a ready local endpoint on the sending node. This tutorial uses a separate gateway with ordinary cluster routing.
 
 **Checkpoint:** Why use a Service address instead of a pod IP as the telemetry destination?
 
@@ -377,46 +365,13 @@ Job IDs go on traces/logs; metric labels use only outcome. Unique job labels wou
 
 **Checkpoint:** What would happen if the exporter waited a minute but the process exited after three seconds without flushing?
 
-## 9. Use the existing demo backends (optional)
-
-The full demo needs considerably more resources. If it is already installed, inspect its Services. To install the supplied manifest in your learning cluster, review it, create `otel-demo` if absent, then run:
-
-```bash
-kubectl apply -n otel-demo -f opentelemetry-demo.yaml
-kubectl -n otel-demo get pods
-kubectl -n otel-demo get services jaeger prometheus
-```
-
-Wait for Jaeger and Prometheus to be ready. The supplied manifest enables Prometheus OTLP ingestion and sets Jaeger's UI base path. Add backend exporters:
-
-```bash
-helm upgrade otel-gateway open-telemetry/opentelemetry-collector \
-  --version 0.173.1 -n otel-lab \
-  -f tutorial/gateway-values.yaml -f tutorial/agent-metrics-values.yaml \
-  -f tutorial/demo-backends-values.yaml
-kubectl -n otel-lab rollout status deployment/otel-gateway
-kubectl -n otel-demo port-forward service/jaeger 16686:16686
-```
-
-Open `http://localhost:16686/jaeger/ui/`, run a fresh job, and search for `buildkite-agent` or `buildkite-job-lab`. Parent duration includes child time; adding every parent and child duration double-counts work.
-
-In another terminal:
-
-```bash
-kubectl -n otel-demo port-forward service/prometheus 9090:9090
-```
-
-Open `http://localhost:9090`. Query `buildkite_agent_jobs_running`; use the name browser to find custom and Kubernetes metrics. This overlay forwards traces and metrics; logs remain in debug output without searchable log storage.
-
-**Experiment:** Increase `LAB_PHASE_SECONDS`. Compare the trace waterfall and duration histogram. Which preserves one job's individual phases?
-
-## 10. Add Buildkite's build-wide view
+## 9. Add Buildkite's build-wide view
 
 The preview OTel notification service sends build/stage/step/job traces. In organization settings, open Integrations → Notification Services, create an OpenTelemetry service, and associate it with your learning pipeline using the UI.
 
 This source runs in Buildkite's control plane. It requires an internet-reachable OTLP HTTP protobuf endpoint. Supply a base HTTPS URL without `/v1/traces`; Buildkite appends the path. Cluster DNS and local port-forwards cannot serve this source. Use a backend's public authenticated endpoint or an authenticated TLS ingress. Do not expose this lab's unauthenticated gateway directly. See [Buildkite's OTel integration](https://buildkite.com/docs/pipelines/integrations/observability/opentelemetry).
 
-Send control-plane and agent traces to the same backend, run a fresh build, and inspect trace IDs and hierarchy. Compare queued time, execution, and custom phases. Export timing and sampling affect which pieces appear together.
+Send control-plane and agent traces to the same telemetry destination, run a fresh build, and inspect trace IDs and hierarchy. The local setup uses debug output; a backend or authenticated ingress must be configured separately for the control-plane source. Compare queued time, execution, and custom phases. Export timing and sampling affect which pieces appear together.
 
 For Buildkite cluster/queue capacity, install the separate [fleet metrics exercise](fleet-metrics.yaml):
 
@@ -441,7 +396,7 @@ Use the learning queue only. Node metrics cannot describe Buildkite's queue back
 
 **Checkpoint:** Explain the different network routes from an in-cluster agent and from Buildkite's notification service.
 
-## 11. Adapt to Agent Stack for Kubernetes
+## 10. Adapt to Agent Stack for Kubernetes
 
 The lab Deployment runs jobs in a persistent agent pod. Agent Stack adds a controller that creates separate job pods. Observe controller, agent container, and command container separately:
 
@@ -454,7 +409,7 @@ If you paused an existing learning controller in step 2, restore it with `kubect
 
 The stack exposes a subset of agent settings; check [agent configuration](https://buildkite.com/docs/agent/self-hosted/agent-stack-k8s/agent-configuration) and [default parameters](https://buildkite.com/docs/agent/self-hosted/agent-stack-k8s/default-parameters). `controllerEnv` applies to the controller, not the job agent. See [controller configuration](https://buildkite.com/docs/agent/self-hosted/agent-stack-k8s/controller-configuration) and [controller metrics](https://buildkite.com/docs/agent/self-hosted/agent-stack-k8s/prometheus-metrics). A `PodMonitor` requires Prometheus Operator; an OTel receiver does not automatically consume those CRDs.
 
-## 12. Troubleshoot by following the data
+## 11. Troubleshoot by following the data
 
 | Symptom | Next check |
 | --- | --- |
@@ -503,9 +458,9 @@ kubectl -n otel-lab get configmap otel-gateway -o yaml
 kubectl -n buildkite get events --sort-by=.metadata.creationTimestamp
 ```
 
-A successful export proves receipt, not durable storage. Verify backend queries. Debug output is temporary inspection.
+Debug output confirms receipt and lets you inspect records. It provides no searchable telemetry storage. When you configure a backend, verify that the data is queryable there.
 
-## 13. Finish with a diagnosis exercise
+## 12. Finish with a diagnosis exercise
 
 | Case | Change | Explain using telemetry |
 | --- | --- | --- |
@@ -524,9 +479,9 @@ kubectl -n buildkite delete secret/buildkite-agent-token
 helm uninstall otel-node otel-cluster otel-gateway -n otel-lab
 ```
 
-Only uninstall releases you installed. Keep shared namespaces and pre-existing demo resources.
+Only uninstall releases you installed. Keep shared namespaces and pre-existing resources.
 
-If you paused a pre-existing Agent Stack controller or demo load generator for the exercises, restore its original replica count when finishing.
+If you paused a pre-existing Agent Stack controller for the exercises, restore its original replica count when finishing.
 
 ## Verification
 
@@ -534,4 +489,4 @@ Authoring checks passed: all YAML parsed, all three Helm configurations rendered
 
 A local OTLP smoke check ran the Python script successfully and with intentional failure. It verified parent trace context, four versus three exported spans, error status, and flushed outcome metrics. Nothing was deployed to Kubernetes or run in Buildkite during authoring.
 
-Runtime checkpoints are for you to complete in your cluster. Agent registration, Git access, node permissions, image availability, and backend readiness depend on your environment.
+Runtime checkpoints are for you to complete in your cluster. Agent registration, Git access, node permissions, and image availability depend on your environment.
